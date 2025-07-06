@@ -43,8 +43,15 @@ public class KillerApplication extends Application {
                 "5BaxlpTegSZzL1ReOpKIygWf7qTqDnTtZsipt/OMttkn/dnhA9iiGJ5Jy+HLXQOc7+QgTYGPyAX5\n" +
                 "2IcWd9l5OrWShpflwsNHsAAU5MMAO/sWR/F/7zxKa50Ve67ta/7rUOkkcD3D0taUBsUeAo6n6rSs\n" +
                 "9Rk4tPEQRm59UJoof9cho7PxsMcTGb9UiNuJ\n";
+        String soLibName="SignatureKiller817";
+        String soZipPath="SignatureKiller817";
+        String targetFileName="files/origin817.apk";
+
         killPM(packageName, signatureData);
-        killOpen(packageName);
+//        killOpen(packageName);
+//        killOpen(packageName, "SignatureKiller817", "assets/origin817.apk", "files/origin817.apk");
+        killOpen(packageName,  soLibName,  soZipPath,  targetFileName);
+
     }
 
     private static void killPM(String packageName, String signatureData) {
@@ -125,41 +132,118 @@ public class KillerApplication extends Application {
         }
     }
 
-    private static void killOpen(String packageName) {
+//    private static void killOpen(String packageName) {
+//        try {
+//            System.loadLibrary("SignatureKiller");
+//        } catch (Throwable e) {
+//            System.err.println("Load SignatureKiller library failed");
+//            return;
+//        }
+//        String apkPath = getApkPath(packageName);
+//        if (apkPath == null) {
+//            System.err.println("Get apk path failed");
+//            return;
+//        }
+//        File apkFile = new File(apkPath);
+//        File repFile = new File(getDataFile(packageName), "origin.apk");
+//        try (ZipFile zipFile = new ZipFile(apkFile)) {
+//            String name = "assets/SignatureKiller/origin.apk";
+//            ZipEntry entry = zipFile.getEntry(name);
+//            if (entry == null) {
+//                System.err.println("Entry not found: " + name);
+//                return;
+//            }
+//            if (!repFile.exists() || repFile.length() != entry.getSize()) {
+//                try (InputStream is = zipFile.getInputStream(entry); OutputStream os = new FileOutputStream(repFile)) {
+//                    byte[] buf = new byte[102400];
+//                    int len;
+//                    while ((len = is.read(buf)) != -1) {
+//                        os.write(buf, 0, len);
+//                    }
+//                }
+//            }
+//        } catch (IOException e) {
+//            throw new RuntimeException(e);
+//        }
+//        hookApkPath(apkFile.getAbsolutePath(), repFile.getAbsolutePath());
+//    }
+
+    private static void killOpen(String packageName, String soLibName, String soZipPath, String targetFileName) {
+        if (soLibName.isEmpty() || soZipPath.isEmpty() || targetFileName.isEmpty()) {
+            return;
+        }
+
         try {
-            System.loadLibrary("SignatureKiller");
-        } catch (Throwable e) {
-            System.err.println("Load SignatureKiller library failed");
-            return;
-        }
-        String apkPath = getApkPath(packageName);
-        if (apkPath == null) {
-            System.err.println("Get apk path failed");
-            return;
-        }
-        File apkFile = new File(apkPath);
-        File repFile = new File(getDataFile(packageName), "origin.apk");
-        try (ZipFile zipFile = new ZipFile(apkFile)) {
-            String name = "assets/SignatureKiller/origin.apk";
-            ZipEntry entry = zipFile.getEntry(name);
-            if (entry == null) {
-                System.err.println("Entry not found: " + name);
-                return;
-            }
-            if (!repFile.exists() || repFile.length() != entry.getSize()) {
-                try (InputStream is = zipFile.getInputStream(entry); OutputStream os = new FileOutputStream(repFile)) {
-                    byte[] buf = new byte[102400];
-                    int len;
-                    while ((len = is.read(buf)) != -1) {
-                        os.write(buf, 0, len);
+            // 1. 读取 /proc/self/maps 找出 APK 路径
+            String apkPath = null;
+            try (BufferedReader reader = new BufferedReader(new FileReader("/proc/self/maps"))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String[] tokens = line.trim().split("\\s+");
+                    if (tokens.length >= 6) {
+                        String path = tokens[5];
+                        if (isApkPath(packageName, path)) {
+                            apkPath = path;
+                            break;
+                        }
                     }
                 }
             }
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+
+            if (apkPath == null) {
+                System.err.println("Get APK path failed");
+                return;
+            }
+
+            File apkFile = new File(apkPath);
+
+            // 2. 计算目标目录路径
+            File dataDir;
+            String userId = Environment.getExternalStorageDirectory().getName();
+            if (userId.matches("\\d+")) {
+                dataDir = new File("/data/user/" + userId + "/" + packageName);
+            } else {
+                dataDir = new File("/data/data/" + packageName);
+            }
+
+            File targetFile = new File(dataDir, targetFileName);
+            targetFile.getParentFile().mkdirs();
+
+            // 3. 读取并提取 so 文件
+            try (ZipFile zipFile = new ZipFile(apkFile)) {
+                ZipEntry entry = zipFile.getEntry(soZipPath);
+                if (entry == null) {
+                    throw new RuntimeException("Entry not found: " + soZipPath);
+                }
+
+                // 如果目标文件已存在且大小相同，直接跳过提取
+                if (!targetFile.exists() || targetFile.length() != entry.getSize()) {
+                    try (InputStream inputStream = zipFile.getInputStream(entry);
+                         FileOutputStream outputStream = new FileOutputStream(targetFile)) {
+                        byte[] buffer = new byte[4096];
+                        int len;
+                        while ((len = inputStream.read(buffer)) != -1) {
+                            outputStream.write(buffer, 0, len);
+                        }
+                    }
+                }
+
+                // 设置环境变量并加载 so
+                System.setProperty("mt.signature.killer.path1", apkFile.getAbsolutePath());
+                System.setProperty("mt.signature.killer.path2", targetFile.getAbsolutePath());
+                System.loadLibrary(soLibName);
+
+            } finally {
+                // 清理系统属性
+                System.clearProperty("mt.signature.killer.path1");
+                System.clearProperty("mt.signature.killer.path2");
+            }
+
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to load library from APK", e);
         }
-        hookApkPath(apkFile.getAbsolutePath(), repFile.getAbsolutePath());
     }
+
 
     @SuppressLint("SdCardPath")
     private static File getDataFile(String packageName) {
